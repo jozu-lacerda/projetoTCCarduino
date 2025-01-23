@@ -1,0 +1,161 @@
+//código mae funcionando V3
+//funcionando
+
+#define BLYNK_TEMPLATE_ID "TMPL2P76zp2Un"
+#define BLYNK_TEMPLATE_NAME "Irrigador Automático"
+#define BLYNK_AUTH_TOKEN "vxaPGXvNfT7j9ZelPoIih1dj-h673Ew3"
+#define BLYNK_PRINT Serial
+
+#include <WiFi.h>                      // Biblioteca para WiFi no ESP32
+#include <IOXhop_FirebaseESP32.h>      // Biblioteca Firebase para ESP32
+#include <BlynkSimpleEsp32.h>          // Biblioteca Blynk para ESP32
+
+// Credenciais Wi-Fi
+const char* ssid = "34Ds-2G";          // Nome da rede Wi-Fi
+const char* pass = "AD342024";         // Senha do Wi-Fi
+
+// Configurações do Firebase
+const String FIREBASE_HOST = "irrigador-4eb2c-default-rtdb.firebaseio.com";  // URL do Firebase
+const String FIREBASE_AUTH = "yiuUJIEeJqj4EfbwcDu01yUbvIBJkvlLSj8fJhzO";      // Chave de autenticação
+
+// Pinos e variáveis
+#define relePin 27
+#define ledamarelo 22
+#define ledvermelho 21
+#define ledverde 23
+#define sensorPin 32  // Pino do sensor analógico
+
+int sensorValues[3] = {0, 0, 0};       // Armazena os valores do sensor para 3 segundos
+unsigned long lastMedirUmidade = 0;
+unsigned long lastEnviarDados = 0;
+
+bool controleManual = false;           // Flag para controle manual
+
+// Função que lida com o botão do Blynk
+BLYNK_WRITE(V27) {
+  int estadoBotao = param.asInt();     // Lê o estado do botão (0 ou 1)
+  controleManual = (estadoBotao == 1);
+
+  if (controleManual) {
+    digitalWrite(relePin, HIGH);       // Liga o relé no modo manual
+    Serial.println("Controle manual ativado: Relé ligado.");
+  } else {
+    digitalWrite(relePin, LOW);        // Desliga o relé e retorna à lógica automática
+    Serial.println("Controle manual desativado: Retornando à lógica automática.");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Conecta ao Wi-Fi
+  Serial.print("Conectando ao Wi-Fi");
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWi-Fi conectado!");
+
+  // Inicializa Firebase
+  Firebase.begin(FIREBASE_HOST.c_str(), FIREBASE_AUTH.c_str());
+  Serial.println("Firebase conectado!");
+
+  // Inicializa Blynk
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+  Serial.println("Blynk conectado!");
+
+  // Inicializa pinos
+  pinMode(relePin, OUTPUT);
+  digitalWrite(relePin, LOW); // Relé inicia desligado
+  pinMode(ledamarelo, OUTPUT);
+  pinMode(ledvermelho, OUTPUT);
+  pinMode(ledverde, OUTPUT);
+  pinMode(sensorPin, INPUT);
+}
+
+// Função para medir a umidade
+void medirUmidade() {
+  static int index = 0;
+
+  // Ler valor do sensor
+  int sensorValue = analogRead(sensorPin);
+  sensorValues[index] = sensorValue;  // Armazena a leitura no vetor
+  index = (index + 1) % 3;            // Avança o índice circularmente
+
+  // Debug
+  Serial.print("Leitura do sensor: ");
+  Serial.println(sensorValue);
+}
+
+// Função para calcular a porcentagem e enviar dados
+void enviarDados() {
+  if (controleManual) return; // Pausa a lógica automática se controle manual estiver ativo
+
+  int soma = 0;
+  for (int i = 0; i < 3; i++) {
+    soma += sensorValues[i];
+  }
+  int media = soma / 3;
+
+  // Variáveis para estados
+  String estadoSolo;
+  bool releStatus = false;
+  bool ledVermelhoStatus = false;
+  bool ledVerdeStatus = false;
+  bool ledAmareloStatus = false;
+
+  // Lógica para determinar o estado do solo
+  if (media >= 2000 && media <= 2600) {  // Solo seco
+    estadoSolo = "Seco";
+    releStatus = true;
+    ledVermelhoStatus = true;
+  } else if (media >= 1200 && media <= 1999) {  // Solo úmido
+    estadoSolo = "Úmido";
+    ledVerdeStatus = true;
+    ledAmareloStatus = true;
+  } else if (media >= 0 && media <= 1199) {  // Solo molhado
+    estadoSolo = "Molhado";
+    ledVerdeStatus = true;
+  }
+
+  // Controle de hardware
+  digitalWrite(relePin, releStatus);
+  digitalWrite(ledvermelho, ledVermelhoStatus);
+  digitalWrite(ledverde, ledVerdeStatus);
+  digitalWrite(ledamarelo, ledAmareloStatus);
+
+  // Envio dos dados ao Firebase
+  String pathBase = "/quarto/";
+  Firebase.setString(pathBase + "estadoSolo", estadoSolo);
+  Firebase.setInt(pathBase + "sensorMedia", media);
+  Firebase.setBool(pathBase + "releStatus", releStatus);
+  Firebase.setBool(pathBase + "ledVermelhoStatus", ledVermelhoStatus);
+  Firebase.setBool(pathBase + "ledVerdeStatus", ledVerdeStatus);
+  Firebase.setBool(pathBase + "ledAmareloStatus", ledAmareloStatus);
+
+  // Envia o valor ao Blynk
+  Blynk.virtualWrite(V32, media);
+
+  // Debug no console
+  Serial.print("Estado do solo: ");
+  Serial.println(estadoSolo);
+  Serial.print("Média do sensor: ");
+  Serial.println(media);
+}
+
+void loop() {
+  Blynk.run();
+
+  // Controla intervalo para medir umidade (1 segundo)
+  if (!controleManual && millis() - lastMedirUmidade >= 1000) {
+    lastMedirUmidade = millis();
+    medirUmidade();
+  }
+
+  // Controla intervalo para enviar dados (3 segundos)
+  if (!controleManual && millis() - lastEnviarDados >= 3000) {
+    lastEnviarDados = millis();
+    enviarDados();
+  }
+}
